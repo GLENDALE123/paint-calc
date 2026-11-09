@@ -95,12 +95,16 @@ function sanitizeRecipe(r) {
     name: String(r.name || '').slice(0, 60),
     color: COLORS.includes(r.color) ? r.color : COLORS[0],
     baseType: BASE_TYPES.includes(r.baseType) ? r.baseType : 'base',
+    baseLabel: String(r.baseLabel || '').slice(0, 40),
     basis: r.basis === 'baseThinner' ? 'baseThinner' : 'base',
+    groups: (Array.isArray(r.groups) ? r.groups : []).slice(0, 10).map((g) => ({ id: String(g.id || uid()), ratio: num(g.ratio) })),
     items: r.items.slice(0, 30).map((it) => ({
       id: String(it.id || uid()),
       type: TYPES.includes(it.type) ? it.type : 'other',
       label: String(it.label || '').slice(0, 40),
       pct: num(it.pct),
+      ...(it.mode === 'ratio' || it.mode === 'pct' ? { mode: it.mode } : {}),
+      ...(it.group ? { group: String(it.group), part: num(it.part) } : {}),
     })),
   }
 }

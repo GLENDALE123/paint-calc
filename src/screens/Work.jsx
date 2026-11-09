@@ -2,19 +2,11 @@ import { useMemo, useState } from 'react'
 import { motion } from 'motion/react'
 import { useStore, matName, parseNum } from '../store.jsx'
 import { LANGS } from '../i18n.js'
-import { mixAmounts, correction, isThinner } from '../calc.js'
+import { mixAmounts, correction, kindOf } from '../calc.js'
+import { baseName, itemDetail, editVal, fromVal, flatten, formula } from '../recipe.js'
 import { Screen, GlassButton, Section, Row, Dot, NumInput, PopUp, Icon, CheckCircle, PrimaryButton, Hero } from '../ui.jsx'
 
-export const baseName = (r, t) => t('type.' + (r.baseType || 'base'))
-
-export function itemDetail(it, r, t, fmt) {
-  const base = baseName(r, t)
-  if (isThinner(it)) return t('ratioOf', { base, r: fmt.num(it.pct / 100, 2) })
-  const p = fmt.num(it.pct, 3)
-  return r.basis === 'baseThinner' && r.items.some(isThinner)
-    ? t('pctOfMix', { base, thinner: t('type.thinner'), p })
-    : t('pctOfBase', { base, p })
-}
+export { baseName, itemDetail }
 
 const when = (ts, t, fmt) => {
   const d = new Date(ts), now = new Date()
@@ -85,7 +77,7 @@ function CanRow({ can, last, onClick }) {
 
 /* 배합 고르기 (새로 섞기 / 기록 없는 통 보정) */
 export function PickRecipe({ nav, mode }) {
-  const { state, t } = useStore()
+  const { state, t, fmt } = useStore()
   // 여기서 만든 배합은 저장 후 바로 이 흐름(섞기/계량)으로 돌아온다
   const create = () => nav.push({ name: 'editRecipe', then: mode === 'mix' ? 'mix' : 'weigh' })
   return (
@@ -103,7 +95,7 @@ export function PickRecipe({ nav, mode }) {
               <span className="h-[30px] w-[30px] flex-none rounded-lg" style={{ background: r.color }} />
               <span className="flex min-w-0 flex-1 flex-col py-2.5">
                 <span className="truncate text-[17px]">{r.name || t('untitled')}</span>
-                <span className="truncate text-[15px] text-label2">{r.items.map((it) => matName(it, t)).join(' · ')}</span>
+                <span className="truncate text-[15px] text-label2">{formula(r, t, fmt)}</span>
               </span>
               <Icon.chevron className="text-label3" />
             </Row>
@@ -124,13 +116,13 @@ export function Mix({ nav, recipeId }) {
   if (!r) return null
   const baseKg = parseNum(kg)
   const ok = baseKg > 0
-  const { rows, totalG } = mixAmounts({ baseG: ok ? baseKg * 1000 : 0, basis: r.basis, items: r.items })
+  const { rows, totalG } = mixAmounts({ baseG: ok ? baseKg * 1000 : 0, basis: r.basis, groups: r.groups, items: r.items })
   const count = r.items.filter((it) => done[it.id]).length
   const all = ok && count === r.items.length
 
   const finish = () => {
-    addCan({ recipeId: r.id, name: r.name, color: r.color, baseType: r.baseType, basis: r.basis,
-      items: r.items.map((x) => ({ ...x })), totalKg: totalG / 1000 })
+    addCan({ recipeId: r.id, name: r.name, color: r.color, baseType: r.baseType, baseLabel: r.baseLabel, basis: r.basis,
+      groups: (r.groups || []).map((g) => ({ ...g })), items: r.items.map((x) => ({ ...x })), totalKg: totalG / 1000 })
     nav.reset()
   }
 
@@ -203,18 +195,20 @@ export function Weigh({ nav, canId, recipeId }) {
   const [tare, setTareLocal] = useState(state.tareKg)
   const [editing, setEditing] = useState(!can)
   // 편집 값: 신나는 1 : x 의 x, 나머지는 %
-  const [cur, setCur] = useState(() => (src ? src.items.map((it) => ({ ...it, val: String(+(isThinner(it) ? it.pct / 100 : it.pct).toFixed(4)) })) : []))
+  const [cur, setCur] = useState(() => (src ? src.items.map((it) => ({ ...it, val: editVal(it) })) : []))
   if (!src) return null
 
   const remain = parseNum(scale) - (parseNum(tare) || 0)
   const ok = remain > 0
-  const meta = { baseType: src.baseType, basis: src.basis, items: src.items }
-  const toPct = (x) => (parseNum(x.val) || 0) * (isThinner(x) ? 100 : 1)
+  const meta = { baseType: src.baseType, baseLabel: src.baseLabel, basis: src.basis, groups: src.groups || [], items: src.items }
+  const live = ({ val, ...y }) => ({ ...y, ...fromVal(y, val) })
+  const liveRecipe = { ...meta, items: cur.map(live) }
+  const unit = (x) => ({ group: [t('partWord'), ''], ratio: ['1 :', ''], pct: ['', '%'] })[kindOf(x)]
   const setVal = (id, v) => setCur(cur.map((y) => (y.id === id ? { ...y, val: v } : y)))
 
   const go = () => {
     setTare(tare)
-    const current = cur.map(({ val, ...x }) => ({ ...x, pct: toPct({ ...x, val }) }))
+    const current = { basis: src.basis, groups: src.groups || [], items: cur.map(live) }
     nav.push({ name: 'fixResult', canId: can?.id, recipeId: recipe?.id, totalG: remain * 1000, current })
   }
   const remove = () => { if (confirm(t('confirmDeleteCan'))) { deleteCan(can.id); nav.reset() } }
@@ -249,7 +243,7 @@ export function Weigh({ nav, canId, recipeId }) {
             <span className="flex h-[22px] w-[22px] flex-none items-center justify-center rounded-full bg-green"><Icon.check /></span>
             <span className="flex min-w-0 flex-1 flex-col py-2.5">
               <span className="text-[17px]">{t('fromMix', { time: when(can.updatedAt, t, fmt) })}</span>
-              <span className="text-[15px] text-label2">{cur.map((x) => `${matName(x, t)} ${isThinner(x) ? '1 : ' + fmt.num(parseNum(x.val), 2) : fmt.num(parseNum(x.val), 3) + '%'}`).join(' · ')}</span>
+              <span className="text-[15px] text-label2">{formula(liveRecipe, t, fmt)}</span>
             </span>
           </Row>
         ) : (
@@ -257,11 +251,11 @@ export function Weigh({ nav, canId, recipeId }) {
             <Row key={x.id} last={i === cur.length - 1}>
               <span className="flex min-w-0 flex-1 flex-col py-2">
                 <span className="text-[17px]">{matName(x, t)}</span>
-                <span className="text-[13px] text-label2">{itemDetail({ ...x, pct: toPct(x) }, meta, t, fmt)}</span>
+                <span className="text-[13px] text-label2">{itemDetail(live(x), liveRecipe, t, fmt)}</span>
               </span>
-              {isThinner(x) && <span className="text-[17px] text-label2">1 :</span>}
+              {unit(x)[0] && <span className="text-[17px] text-label2">{unit(x)[0]}</span>}
               <NumInput value={x.val} label={matName(x, t)} className="w-20 text-[17px]" onChange={(v) => setVal(x.id, v)} />
-              {!isThinner(x) && <span className="text-[17px] text-label2">%</span>}
+              {unit(x)[1] && <span className="text-[17px] text-label2">{unit(x)[1]}</span>}
             </Row>
           ))
         )}
@@ -279,10 +273,10 @@ export function FixResult({ nav, canId, recipeId, totalG, current }) {
   const targetSrc = recipe || can
   const [done, setDone] = useState({})
 
-  const res = useMemo(() => targetSrc && correction({ totalG, basis: targetSrc.basis, current, target: targetSrc.items }), [targetSrc, totalG, current])
+  const res = useMemo(() => targetSrc && correction({ totalG, current, target: { basis: targetSrc.basis, groups: targetSrc.groups || [], items: targetSrc.items } }), [targetSrc, totalG, current])
   if (!targetSrc) return null
 
-  const names = Object.fromEntries([...current, ...targetSrc.items].map((it) => [it.id, it]))
+  const names = Object.fromEntries([...current.items, ...targetSrc.items].map((it) => [it.id, it]))
   const steps = []
   if (res.base.addG > 0.5) steps.push({ id: '__base', name: baseName(targetSrc, t), add: res.base.addG, from: res.base.curG, to: res.base.finalG })
   for (const row of res.rows) {
@@ -294,16 +288,13 @@ export function FixResult({ nav, canId, recipeId, totalG, current }) {
   const all = count === steps.length
 
   const finish = () => {
-    const snap = { baseType: targetSrc.baseType, basis: targetSrc.basis, totalKg: res.finalG / 1000,
-      items: [...targetSrc.items, ...current.filter((c) => !targetSrc.items.some((x) => x.id === c.id))].map((x) => ({ ...x })) }
-    // 덜어낼 수 없어 목표보다 많이 남은 성분(목표에 없는 성분 포함)은 실제 비율로 기록
-    const B = res.base.finalG, tT = targetSrc.items.filter(isThinner).reduce((a, x) => a + x.pct / 100, 0)
-    const f = snap.basis === 'baseThinner' ? 1 + tT : 1
-    snap.items = snap.items.map((x) => {
-      const row = res.rows.find((r) => r.id === x.id)
-      if (!row?.stuck) return x
-      return { ...x, pct: isThinner(x) ? (row.finalG / B) * 100 : (row.finalG / (B * f)) * 100 }
-    })
+    const extra = current.items.filter((c) => !targetSrc.items.some((x) => x.id === c.id))
+    const list = [...targetSrc.items, ...extra].map((x) => ({ ...x }))
+    // 덜어낼 수 없어 목표보다 많이 남은 성분이 있으면, 실제 들어간 양 그대로(주제 1 : x) 기록
+    const stuckAny = res.rows.some((r) => r.stuck)
+    const snap = { baseType: targetSrc.baseType, baseLabel: targetSrc.baseLabel, basis: targetSrc.basis, totalKg: res.finalG / 1000,
+      groups: stuckAny ? [] : (targetSrc.groups || []).map((g) => ({ ...g })),
+      items: stuckAny ? flatten(list, res.rows, res.base.finalG) : list }
     if (can) updateCan(can.id, snap)
     else addCan({ recipeId: recipe.id, name: recipe.name, color: recipe.color, ...snap })
     nav.reset()
