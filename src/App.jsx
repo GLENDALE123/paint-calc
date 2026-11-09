@@ -2,13 +2,12 @@ import { useMemo, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { useStore } from './store.jsx'
 import { Icon } from './ui.jsx'
-import { Home, PickRecipe, Mix, PickCan, Weigh, FixResult } from './screens/Work.jsx'
-import { RecipeList, EditRecipe } from './screens/Recipes.jsx'
+import { Home, Can, Result } from './screens/Work.jsx'
+import { RecipeList, Build } from './screens/Recipes.jsx'
 import { Defects } from './screens/Defects.jsx'
 
 const ROOTS = { work: { name: 'home' }, recipes: { name: 'recipeList' }, defects: { name: 'defects' } }
-const SCREENS = { home: Home, pickRecipe: PickRecipe, mix: Mix, pickCan: PickCan, weigh: Weigh, fixResult: FixResult,
-  recipeList: RecipeList, editRecipe: EditRecipe, defects: Defects }
+const SCREENS = { home: Home, can: Can, result: Result, recipeList: RecipeList, build: Build, defects: Defects }
 
 let seq = 0
 const entry = (s) => ({ ...s, key: ++seq })

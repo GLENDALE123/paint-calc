@@ -46,3 +46,4 @@ input { font-size: max(16px, 1em); } /* iOS 자동 확대 방지 */
 .pt-safe { padding-top: max(env(safe-area-inset-top), 12px); }
 .pb-safe { padding-bottom: max(env(safe-area-inset-bottom), 12px); }
 .no-spin::-webkit-outer-spin-button, .no-spin::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.no-scrollbar{scrollbar-width:none}.no-scrollbar::-webkit-scrollbar{display:none}

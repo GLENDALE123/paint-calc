@@ -16,15 +16,21 @@ export const Icon = {
   pie: (p) => <svg aria-hidden="true" width="24" height="24" viewBox="0 0 24 24" fill="currentColor" {...p}><path d="M11 2.05A10 10 0 1 0 21.95 13H11z" /><path d="M13 2.05V11h8.95A10 10 0 0 0 13 2.05z" opacity="0.55" /></svg>,
   trash: (p) => <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M4 7h16M10 11v6M14 11v6M5 7l1 13h12l1-13M9 7V4h6v3" /></svg>,
   share: (p) => <svg aria-hidden="true" width="18" height="22" viewBox="0 0 18 22" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M9 14V2M4.5 6L9 1.5 13.5 6" /><path d="M6 9H3v11h12V9h-3" /></svg>,
+  close: (p) => <svg aria-hidden="true" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" {...p}><path d="M3 3l10 10M13 3L3 13" /></svg>,
+  done: (p) => <svg aria-hidden="true" width="18" height="18" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M2.5 7.5l3 3 6-7" /></svg>,
+  search: (p) => <svg aria-hidden="true" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" {...p}><circle cx="11" cy="11" r="7" /><path d="M20 20l-4-4" /></svg>,
+  warn: (p) => <svg aria-hidden="true" width="22" height="20" viewBox="0 0 24 22" fill="none" stroke="var(--orange)" strokeWidth="2" strokeLinejoin="round" {...p}><path d="M12 2L1.5 20.5h21z" /><path d="M12 9v5M12 17v.5" strokeLinecap="round" /></svg>,
+  paste: (p) => <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinejoin="round" {...p}><rect x="5" y="4" width="14" height="17" rx="2" /><path d="M9 4V2.5h6V4M9 10h6M9 14h6" /></svg>,
+  del: (p) => <svg aria-hidden="true" width="26" height="19" viewBox="0 0 24 18" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" {...p}><path d="M7 1h15v16H7L1 9z" /><path d="M12 6l6 6M18 6l-6 6" strokeLinecap="round" /></svg>,
   download: (p) => <svg aria-hidden="true" width="18" height="22" viewBox="0 0 18 22" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M9 2v12M4.5 9.5L9 14l4.5-4.5" /><path d="M3 18h12" /></svg>,
 }
 
 /* ---------- 화면 틀: 상단 떠 있는 버튼 + 스크롤 영역 ---------- */
-export function Screen({ title, subtitle, large, left, right, children, bottom, tabBar = true }) {
+export function Screen({ title, subtitle, large, left, right, children, bottom, tabBar = true, pad }) {
   return (
     <div className="absolute inset-0 flex flex-col bg-bg">
       <div className="flex-1 overflow-y-auto overscroll-contain">
-        <div className="pt-safe mx-auto w-full max-w-[560px] px-4" style={{ paddingBottom: bottom ? 120 : tabBar ? 120 : 40 }}>
+        <div className="pt-safe mx-auto w-full max-w-[560px] px-4" style={{ paddingBottom: pad ?? (bottom ? 120 : tabBar ? 120 : 40) }}>
           <div className="sticky top-0 z-20 -mx-4 px-4 pt-1 pb-3" style={{ background: 'linear-gradient(to bottom, var(--bg) 60%, transparent)' }}>
             <div className="flex h-11 items-center justify-between gap-2">
               <div className="flex min-w-11 gap-2">{left}</div>

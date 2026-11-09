@@ -10,6 +10,7 @@ const empty = () => ({
   v: 1,
   lang: detectLang(),
   tareKg: '',
+  capKg: '',
   canSeq: 0,
   recipes: [],
   cans: [],
@@ -20,10 +21,20 @@ function load() {
   try {
     const raw = localStorage.getItem(KEY)
     if (!raw) return empty()
-    return { ...empty(), ...JSON.parse(raw) }
+    const s = { ...empty(), ...JSON.parse(raw) }
+    return { ...s, cans: (s.cans || []).map(migrateCan) }
   } catch {
     return empty()
   }
+}
+
+// 예전 통 기록(배합 필드가 통에 바로 있음) → { target, state }
+const pick = (x) => ({ baseLabel: x.baseLabel || '', baseType: x.baseType || 'base', basis: x.basis || 'base',
+  groups: (x.groups || []).map((g) => ({ ...g })), items: (x.items || []).map((it) => ({ ...it })) })
+export function migrateCan(c) {
+  if (c.target && c.state) return c
+  const r = pick(c)
+  return { ...c, target: r, state: pick(r) }
 }
 
 const Ctx = createContext(null)
@@ -46,6 +57,8 @@ export function StoreProvider({ children }) {
     return {
       setLang: (lang) => set(() => ({ lang })),
       setTare: (tareKg) => set(() => ({ tareKg })),
+      setCap: (capKg) => set(() => ({ capKg })),
+      touchRecipe: (id) => set((s) => ({ recipes: s.recipes.map((r) => (r.id === id ? { ...r, usedAt: Date.now() } : r)) })),
       saveRecipe: (r) => set((s) => ({
         recipes: s.recipes.some((x) => x.id === r.id) ? s.recipes.map((x) => (x.id === r.id ? r : x)) : [...s.recipes, r],
       })),
@@ -93,6 +106,7 @@ function sanitizeRecipe(r) {
   return {
     id: String(r.id || uid()),
     name: String(r.name || '').slice(0, 60),
+    usedAt: Number.isFinite(+r.usedAt) ? +r.usedAt : 0,
     color: COLORS.includes(r.color) ? r.color : COLORS[0],
     baseType: BASE_TYPES.includes(r.baseType) ? r.baseType : 'base',
     baseLabel: String(r.baseLabel || '').slice(0, 40),

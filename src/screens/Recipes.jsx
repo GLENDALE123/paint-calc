@@ -1,8 +1,9 @@
-import { useRef, useState } from 'react'
-import { useStore, uid, matName, parseNum, MATERIAL_TYPES, BASE_TYPES, COLORS, exportPayload, parseImport } from '../store.jsx'
-import { kindOf, ratioToPct } from '../calc.js'
-import { Screen, GlassButton, Section, Row, NumInput, PopUp, Icon, Segmented } from '../ui.jsx'
-import { baseName, itemDetail, editVal, fromVal, formula, hasFixed } from '../recipe.js'
+import { useMemo, useRef, useState } from 'react'
+import { useStore, uid, matName, COLORS, exportPayload, parseImport } from '../store.jsx'
+import { baseName, formula } from '../recipe.js'
+import { parse, serialize, shortName, expandName, tokenize } from '../formula.js'
+import { Screen, GlassButton, Section, Row, Icon } from '../ui.jsx'
+import { Lines, valsOf } from './Work.jsx'
 
 export function RecipeList({ nav }) {
   const { state, t, fmt, importRecipes } = useStore()
@@ -28,19 +29,19 @@ export function RecipeList({ nav }) {
 
   return (
     <Screen large title={t('recipes')}
-      right={<GlassButton label={t('newRecipe')} onClick={() => nav.push({ name: 'editRecipe' })}><Icon.plus /></GlassButton>}>
+      right={<GlassButton label={t('newRecipe')} onClick={() => nav.push({ name: 'build' })}><Icon.plus /></GlassButton>}>
       <Section footer={state.recipes.length === 0 ? t('noRecipes') : null}>
         {state.recipes.map((r) => (
-          <Row key={r.id} className="min-h-[60px]" onClick={() => nav.push({ name: 'editRecipe', id: r.id })}>
+          <Row key={r.id} className="min-h-[60px]" onClick={() => nav.push({ name: 'build', id: r.id })}>
             <span className="h-[30px] w-[30px] flex-none rounded-lg" style={{ background: r.color, boxShadow: 'inset 0 0 0 0.5px rgba(0,0,0,0.15)' }} />
             <span className="flex min-w-0 flex-1 flex-col py-2.5">
-              <span className="truncate text-[17px]">{r.name || t('untitled')}</span>
+              <span className="truncate text-[17px]">{r.name || baseName(r, t)}</span>
               <span className="truncate text-[15px] text-label2">{formula(r, t, fmt)}</span>
             </span>
             <Icon.chevron className="text-label3" />
           </Row>
         ))}
-        <Row last onClick={() => nav.push({ name: 'editRecipe' })} className="text-blue"><Icon.plusCircle /><span className="text-[17px]">{t('newRecipe')}</span></Row>
+        <Row last onClick={() => nav.push({ name: 'build' })} className="text-blue"><Icon.plusCircle /><span className="text-[17px]">{t('newRecipe')}</span></Row>
       </Section>
 
       <Section footer={msg || t('shareHint')}>
@@ -52,207 +53,138 @@ export function RecipeList({ nav }) {
   )
 }
 
-const toDraft = (r) => ({
-  ...r,
-  baseLabel: r.baseLabel || '',
-  groups: (r.groups || []).map((g) => ({ ...g, val: String(+(+g.ratio || 0).toFixed(4)) })),
-  items: r.items.map((it) => ({ ...it, val: editVal(it) })),
-})
-const fromDraft = (d) => {
-  const groups = d.groups.map(({ val, ...g }) => ({ ...g, ratio: parseNum(val) || 0 }))
-  return {
-    ...d,
-    name: d.name.trim(),
-    baseLabel: d.baseLabel.trim(),
-    groups,
-    items: d.items
-      .filter((it) => !it.group || groups.some((g) => g.id === it.group))
-      .map(({ val, ...it }) => ({ ...it, ...fromVal(it, val) })),
-  }
+/* ---------- 표기 편집 (키패드 입력) ---------- */
+const lastTok = (s) => { const k = tokenize(s); return k[k.length - 1] }
+const isNumTok = (w) => /^\d+(?:[.,]\d*)?$/.test(w || '')
+const valueEnded = (s) => { const w = lastTok(s); return isNumTok(w) || w === ')' || w === '%' }
+const openGroup = (s) => (s.match(/\(/g) || []).length > (s.match(/\)/g) || []).length
+
+function insName(s, label) {
+  let x = s.trimEnd()
+  if (!x) return label + ' '
+  if (valueEnded(x)) x += ' :'
+  return `${x} ${label} `
+}
+function insDigit(s, d) {
+  if (/\s$/.test(s) || !s) return s + d
+  const w = lastTok(s)
+  if (isNumTok(w)) return s + d
+  return s + ' ' + d
+}
+function backspace(s) {
+  const x = s.trimEnd()
+  const w = lastTok(x)
+  if (!w) return ''
+  if (isNumTok(w)) return x.slice(0, -1)
+  return x.slice(0, x.length - w.length).trimEnd() + (x.length - w.length > 0 ? ' ' : '')
 }
 
-export function EditRecipe({ nav, id, then }) {
-  const { state, t, fmt, saveRecipe, deleteRecipe } = useStore()
+export function Build({ nav, id, then }) {
+  const { state, t, saveRecipe, deleteRecipe } = useStore()
   const existing = state.recipes.find((r) => r.id === id)
-  const [d, setD] = useState(() => toDraft(existing || {
-    id: uid(), name: '', color: COLORS[0], baseType: 'base', baseLabel: '', basis: 'base', groups: [],
-    items: [{ id: uid(), type: 'thinner', label: '', pct: 0 }, { id: uid(), type: 'pigment', label: '', pct: 0 }],
-  }))
-  const [ratio, setRatio] = useState(null) // { total, parts: {id: val} }
+  const [name, setName] = useState(existing?.name || '')
+  const [text, setText] = useState(() => (existing ? serialize(existing, baseName(existing, t), (it) => matName(it, t)) : ''))
+  const [code, setCode] = useState(null) // 새 재료 번호 입력 중
+  const [pasting, setPasting] = useState(false)
+  const parsed = useMemo(() => parse(text, existing), [text, existing])
+  const ok = !!parsed.recipe
 
-  const set = (patch) => setD((x) => ({ ...x, ...patch }))
-  const setItem = (iid, patch) => setD((x) => ({ ...x, items: x.items.map((it) => (it.id === iid ? { ...it, ...patch } : it)) }))
-  const setGroup = (gid, patch) => setD((x) => ({ ...x, groups: x.groups.map((g) => (g.id === gid ? { ...g, ...patch } : g)) }))
-  const removeItem = (iid) => setD((x) => ({ ...x, items: x.items.filter((it) => it.id !== iid) }))
-  const addItem = (extra) => setD((x) => ({ ...x, items: [...x.items, { id: uid(), type: 'pigment', label: '', pct: 0, val: '', ...extra }] }))
-  const addGroup = () => {
-    const gid = uid()
-    setD((x) => ({
-      ...x,
-      groups: [...x.groups, { id: gid, ratio: 1, val: '1' }],
-      items: [...x.items,
-        { id: uid(), type: 'matte', label: '', group: gid, part: 1, val: '1' },
-        { id: uid(), type: 'thinner', label: '', group: gid, part: 1, val: '1' }],
-    }))
-  }
-  const removeGroup = (gid) => setD((x) => ({ ...x, groups: x.groups.filter((g) => g.id !== gid), items: x.items.filter((it) => it.group !== gid) }))
-
-  const preview = fromDraft(d)
-  const base = baseName(preview, t)
-  const loose = d.items.filter((it) => !it.group)
-  const pctItems = d.items.filter((it) => kindOf(it) === 'pct')
-  const showBasis = hasFixed(preview) && pctItems.length > 0
+  // 재료 버튼: 저장된 배합에 나온 이름, 많이 쓴 순
+  const chips = useMemo(() => {
+    const n = new Map()
+    for (const r of state.recipes) for (const l of [r.baseLabel, ...r.items.map((it) => it.label)]) {
+      const k = (l || '').trim(); if (k) n.set(k, (n.get(k) || 0) + 1)
+    }
+    return [...n.entries()].sort((a, b) => b[1] - a[1]).map(([k]) => k).slice(0, 24)
+  }, [state.recipes])
 
   const save = () => {
-    saveRecipe(fromDraft(d))
-    if (then) { nav.pop(); nav.push({ name: then, recipeId: d.id }) } else nav.pop()
+    if (!ok) return
+    const r = { ...(existing || { color: COLORS[0] }), ...parsed.recipe, id: existing?.id || uid(), name: name.trim() || parsed.recipe.baseLabel }
+    saveRecipe(r)
+    if (then) { nav.pop(); nav.push({ name: then, recipeId: r.id }) } else nav.pop()
   }
-  const remove = () => { if (confirm(t('confirmDeleteRecipe'))) { deleteRecipe(d.id); nav.pop() } }
-  const applyRatio = () => {
-    const pcts = ratioToPct(pctItems.map((it) => parseNum(ratio.parts[it.id]) || 0), parseNum(ratio.total) || 0)
-    setD((x) => ({ ...x, items: x.items.map((it) => {
-      const i = pctItems.findIndex((o) => o.id === it.id)
-      return i < 0 ? it : { ...it, val: String(+pcts[i].toFixed(4)) }
-    }) }))
-    setRatio(null)
+  const remove = () => { if (confirm(t('confirmDeleteRecipe'))) { deleteRecipe(existing.id); nav.pop() } }
+  const paste = async () => {
+    try { const s = await navigator.clipboard.readText(); if (s.trim()) { setText(s.trim()); return } } catch { /* 권한 없음 */ }
+    setPasting(true)
   }
 
-  const typePop = (it) => (
-    <PopUp value={it.type} label={t('materials')} className="!text-label flex-none"
-      onChange={(v) => setItem(it.id, { type: v })} options={MATERIAL_TYPES.map((m) => ({ value: m, label: t('type.' + m) }))} />
+  const key = (label, onClick, cls = '', aria) => (
+    <button type="button" aria-label={aria} onClick={onClick}
+      className={`flex h-[46px] items-center justify-center rounded-[6px] text-[25px] active:bg-[#c0c3ca] ${cls}`}>{label}</button>
   )
-  const labelInput = (it) => (
-    <input value={it.label} onChange={(e) => setItem(it.id, { label: e.target.value })} placeholder={t('materialLabelPh')} aria-label={t('materialLabel')}
-      className="min-w-0 flex-1 bg-transparent text-[17px] outline-none placeholder:text-label3" />
+  const pill = (label, onClick, cls = '') => (
+    <button type="button" onClick={onClick} className={`h-9 flex-none rounded-full px-3.5 text-[15px] font-semibold active:scale-95 ${cls}`}>{label}</button>
   )
-  const sep = <span aria-hidden="true" className="absolute right-0 bottom-0 left-5 h-px scale-y-50 bg-sep" />
+  const digit = (d) => (code != null ? setCode(code + d) : setText(insDigit(text, d)))
+  const pickSuffix = (suf) => { if (code) setText(insName(text, expandName(code + suf))); setCode(null) }
 
   return (
-    <Screen title={d.name || t('newRecipe')} tabBar={false}
-      left={<GlassButton label={t('cancel')} onClick={nav.pop}><Icon.back /></GlassButton>}
-      right={<button type="button" onClick={save} className="h-11 rounded-full bg-blue px-5 text-[17px] font-semibold text-white active:scale-95">{t('done')}</button>}>
+    <div className="absolute inset-0">
+      <Screen title={existing ? name || parsed.recipe?.baseLabel || t('newRecipe') : t('newRecipe')} tabBar={false} pad={400}
+        left={<GlassButton label={t('cancel')} onClick={nav.pop}><Icon.close /></GlassButton>}
+        right={<button type="button" aria-label={t('done')} onClick={save} disabled={!ok}
+          className={`flex h-11 w-11 items-center justify-center rounded-full ${ok ? 'bg-blue text-white' : 'bg-fill text-label3'}`}><Icon.done /></button>}>
 
-      <Section>
-        <Row>
-          <span className="w-24 flex-none text-[17px]">{t('recipeName')}</span>
-          <input value={d.name} onChange={(e) => set({ name: e.target.value })} placeholder={t('recipeNamePh')} aria-label={t('recipeName')}
-            className="min-w-0 flex-1 bg-transparent text-right text-[17px] outline-none placeholder:text-label3" />
-        </Row>
-        <Row>
-          <span className="flex-1 text-[17px]">{t('color')}</span>
-          <div className="flex flex-wrap justify-end gap-1.5 py-2">
-            {COLORS.map((c) => (
-              <button key={c} type="button" aria-label={c} aria-pressed={d.color === c} onClick={() => set({ color: c })}
-                className="h-7 w-7 rounded-full" style={{ background: c, boxShadow: d.color === c ? '0 0 0 2px var(--card), 0 0 0 4px var(--blue)' : 'inset 0 0 0 0.5px rgba(0,0,0,0.2)' }} />
-            ))}
-          </div>
-        </Row>
-        <Row last>
-          <PopUp value={d.baseType} label={t('baseType')} className="!text-label flex-none" onChange={(v) => set({ baseType: v })}
-            options={BASE_TYPES.map((b) => ({ value: b, label: t('type.' + b) }))} />
-          <input value={d.baseLabel} onChange={(e) => set({ baseLabel: e.target.value })} placeholder={t('baseLabelPh')} aria-label={t('baseLabel')}
-            className="min-w-0 flex-1 bg-transparent text-[17px] outline-none placeholder:text-label3" />
-          <span className="text-[17px] text-label2">1</span>
-        </Row>
-      </Section>
-
-      <div className="rounded-[26px] bg-card px-[22px] py-4">
-        <div className="text-[13px] text-label2">{t('formula')}</div>
-        <div className="num mt-1 text-[17px] font-semibold leading-snug break-words">{formula(preview, t, fmt)}</div>
-      </div>
-
-      <Section header={<><span>{t('materials')}</span>
-        {pctItems.length > 1 && <button type="button" className="text-blue" onClick={() => setRatio(ratio ? null : { total: '', parts: {} })}>{t('ratioMode')}</button>}</>}
-        footer={t('unitHint', { base })}>
-        {loose.map((it) => {
-          const k = kindOf(it)
-          return (
-            <div key={it.id} className="relative flex flex-col gap-1 px-5 py-3">
-              <div className="flex items-center gap-3">
-                <button type="button" aria-label={t('delete')} onClick={() => removeItem(it.id)}><Icon.minusCircle /></button>
-                {typePop(it)}
-                {labelInput(it)}
-                {k === 'ratio' && <span className="text-[17px] text-label2">1 :</span>}
-                <NumInput value={it.val} onChange={(v) => setItem(it.id, { val: v })} label={matName(it, t)} placeholder="0" className="w-16 text-[17px] font-semibold" />
-                <PopUp value={k} label={t('unit')} className="flex-none !text-[15px]"
-                  onChange={(v) => setItem(it.id, { mode: v })}
-                  options={[{ value: 'pct', label: '%' }, { value: 'ratio', label: '1 : x' }]} />
-              </div>
-              <span className="pl-[34px] text-[13px] text-label2">{itemDetail(preview.items.find((x) => x.id === it.id), preview, t, fmt)}</span>
-              {sep}
-            </div>
-          )
-        })}
-        <Row onClick={() => addItem()} className="text-blue">
-          <Icon.plusCircle /><span className="text-[17px]">{t('addMaterial')}</span>
-        </Row>
-        <Row last onClick={addGroup} className="text-blue">
-          <Icon.plusCircle /><span className="text-[17px]">{t('addPremix')}</span>
-        </Row>
-      </Section>
-
-      {d.groups.map((g, gi) => (
-        <Section key={g.id}
-          header={<><span>{t('premix')} {d.groups.length > 1 ? gi + 1 : ''}</span>
-            <button type="button" className="text-red" onClick={() => removeGroup(g.id)}>{t('delete')}</button></>}
-          footer={t('premixHint', { base })}>
-          <Row>
-            <span className="flex-1 text-[17px]">{base} 1 : ({t('premix')})</span>
-            <NumInput value={g.val} onChange={(v) => setGroup(g.id, { val: v })} label={t('premix')} placeholder="0" className="w-16 text-[17px] font-semibold" />
-          </Row>
-          {d.items.filter((it) => it.group === g.id).map((it) => (
-            <div key={it.id} className="relative flex flex-col gap-1 px-5 py-3">
-              <div className="flex items-center gap-3">
-                <button type="button" aria-label={t('delete')} onClick={() => removeItem(it.id)}><Icon.minusCircle /></button>
-                {typePop(it)}
-                {labelInput(it)}
-                <NumInput value={it.val} onChange={(v) => setItem(it.id, { val: v })} label={matName(it, t)} placeholder="0" className="w-16 text-[17px] font-semibold" />
-                <span className="text-[15px] text-label2">{t('partWord')}</span>
-              </div>
-              <span className="pl-[34px] text-[13px] text-label2">{itemDetail(preview.items.find((x) => x.id === it.id), preview, t, fmt)}</span>
-              {sep}
-            </div>
-          ))}
-          <Row last onClick={() => addItem({ group: g.id, part: 1, val: '1' })} className="text-blue">
-            <Icon.plusCircle /><span className="text-[17px]">{t('addMaterial')}</span>
-          </Row>
-        </Section>
-      ))}
-
-      {ratio && (
-        <Section header={<span>{t('ratioMode')}</span>}>
-          <Row>
-            <span className="flex-1 text-[17px]">{t('totalPct')}</span>
-            <NumInput value={ratio.total} onChange={(v) => setRatio({ ...ratio, total: v })} label={t('totalPct')} placeholder="0" className="w-20 text-[17px]" />
-            <span className="text-[17px] text-label2">%</span>
-          </Row>
-          {pctItems.map((it) => (
-            <Row key={it.id}>
-              <span className="flex-1 text-[17px]">{matName(it, t)}</span>
-              <span className="text-[15px] text-label2">{t('parts')}</span>
-              <NumInput value={ratio.parts[it.id] || ''} onChange={(v) => setRatio({ ...ratio, parts: { ...ratio.parts, [it.id]: v } })} label={matName(it, t)} placeholder="0" className="w-16 text-[17px]" />
-            </Row>
-          ))}
-          <Row last onClick={applyRatio} className="justify-center font-semibold text-blue">{t('apply')}</Row>
-        </Section>
-      )}
-
-      {showBasis && (
-        <Section header={<span>{t('basis')}</span>}>
-          <div className="p-3">
-            <Segmented value={d.basis} onChange={(v) => set({ basis: v })} options={[
-              { value: 'base', label: t('basisBase', { base }) },
-              { value: 'baseThinner', label: t('basisMix', { base }) },
-            ]} />
-          </div>
-        </Section>
-      )}
-
-      {existing && (
         <Section>
-          <Row last onClick={remove} className="justify-center text-red"><span className="text-[17px]">{t('deleteRecipe')}</span></Row>
+          <Row last>
+            <span className="w-20 flex-none text-[17px]">{t('recipeName')}</span>
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder={parsed.recipe?.baseLabel || t('recipeNamePh')} aria-label={t('recipeName')}
+              className="min-w-0 flex-1 bg-transparent text-right text-[17px] outline-none placeholder:text-label3" />
+          </Row>
         </Section>
-      )}
-    </Screen>
+
+        <Section footer={<span className={ok || !text ? '' : 'text-red'}>{text ? (ok ? text : t('parseErr') + ' · ' + text) : t('formulaHint')}</span>}>
+          {ok ? <Lines recipe={parsed.recipe} vals={valsOf(parsed.recipe)} /> : (
+            <Row last><span className="num min-h-[24px] flex-1 break-all text-[17px]">{text}<span className="ml-0.5 inline-block h-5 w-0.5 translate-y-1 bg-blue" /></span></Row>
+          )}
+        </Section>
+
+        <Section footer={t('pasteHint')}>
+          {pasting ? (
+            <textarea autoFocus rows={3} placeholder={t('pasteMemo')} aria-label={t('pasteMemo')}
+              onChange={(e) => setText(e.target.value)} onBlur={() => setPasting(false)}
+              className="block w-full resize-none bg-transparent px-5 py-3 text-[17px] outline-none" />
+          ) : (
+            <Row last onClick={paste} className="text-blue"><Icon.paste /><span className="text-[17px]">{t('pasteMemo')}</span></Row>
+          )}
+        </Section>
+
+        {existing && (
+          <Section><Row last onClick={remove} className="justify-center text-red"><span className="text-[17px]">{t('deleteRecipe')}</span></Row></Section>
+        )}
+      </Screen>
+
+      <div className="absolute inset-x-0 bottom-0 z-30 bg-[#d1d3d9] text-black dark:bg-[#2c2c2e] dark:text-white">
+        <div className="no-scrollbar flex gap-2 overflow-x-auto border-b border-black/10 bg-white/70 px-2 py-1.5 dark:bg-white/5">
+          {code != null ? (
+            <>
+              <span className="num flex h-9 flex-none items-center px-2 text-[17px] font-semibold">{code || t('newMatHint')}</span>
+              {code && ['무', '유', '신'].map((s) => pill(s === '무' ? code + '무광' : s === '유' ? code + '유광' : code + '신나', () => pickSuffix(s), 'bg-white dark:bg-white/15'))}
+              {code && pill(code, () => pickSuffix(''), 'bg-white dark:bg-white/15')}
+              {pill(t('cancel'), () => setCode(null), 'text-blue')}
+            </>
+          ) : (
+            <>
+              {chips.map((c) => pill(shortName(c), () => setText(insName(text, c)), 'bg-white dark:bg-white/15'))}
+              {pill('+ ' + t('newMaterial'), () => setCode(''), 'border border-dashed border-black/30 dark:border-white/30')}
+            </>
+          )}
+        </div>
+        <div className="flex gap-2 bg-white/70 px-2 pt-1.5 pb-2 dark:bg-white/5">
+          {pill(openGroup(text) ? ')' : '(', () => setText(openGroup(text) ? text.trimEnd() + ') ' : (valueEnded(text) ? text.trimEnd() + ' : (' : text + '(')), 'flex-1 bg-black/10 dark:bg-white/15')}
+          {pill(':', () => setText(text.trimEnd() + ' : '), 'flex-1 bg-black/10 dark:bg-white/15')}
+          {pill('+', () => setText(text.trimEnd() + ' + '), 'flex-1 bg-black/10 dark:bg-white/15')}
+          {pill('%', () => setText(text.trimEnd() + '%'), 'flex-1 bg-black/10 dark:bg-white/15')}
+        </div>
+        <div className="pb-safe grid grid-cols-3 gap-1.5 px-1.5 pt-1.5" style={{ paddingBottom: 'max(env(safe-area-inset-bottom), 8px)' }}>
+          {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((d) => <span key={d} className="contents">{key(d, () => digit(d), 'bg-white shadow-[0_1px_0_rgba(0,0,0,0.3)] dark:bg-white/25')}</span>)}
+          {key('.', () => (code == null && setText(insDigit(text, '.'))), '')}
+          {key('0', () => digit('0'), 'bg-white shadow-[0_1px_0_rgba(0,0,0,0.3)] dark:bg-white/25')}
+          {key(<Icon.del />, () => (code != null ? setCode(code.slice(0, -1)) : setText(backspace(text))), '', t('delete'))}
+        </div>
+      </div>
+    </div>
   )
 }
